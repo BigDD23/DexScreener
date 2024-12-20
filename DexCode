@@ -1,0 +1,94 @@
+from flask import Flask, request, jsonify
+import pandas as pd
+import numpy as np
+import logging
+import os
+from sklearn.ensemble import RandomForestClassifier
+import tweepy
+from textblob import TextBlob
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Twitter API credentials (use environment variables for security)
+TWITTER_API_KEY = os.getenv("TWITTER_API_KEY")
+TWITTER_API_SECRET = os.getenv("TWITTER_API_SECRET")
+TWITTER_ACCESS_TOKEN = os.getenv("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+
+# Set up Tweepy client
+if all([TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET]):
+    auth = tweepy.OAuthHandler(TWITTER_API_KEY, TWITTER_API_SECRET)
+    auth.set_access_token(TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET)
+    api = tweepy.API(auth)
+else:
+    api = None
+
+# Example: Pre-trained model (replace with your trained model)
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# Mock model training (use your actual trained model)
+data = {
+    'price_change_24h': [12, -15, 20, -5, 3],
+    'liquidity': [100000, 5000, 80000, 2000, 12000],
+    'volume_24h': [50000, 2000, 70000, 1000, 8000],
+    'ownership_concentration': [0.2, 0.9, 0.4, 0.8, 0.6],
+    'social_sentiment': [0.8, 0.1, 0.7, 0.2, 0.5],
+    'is_rug_pull': [0, 1, 0, 1, 0]
+}
+
+df = pd.DataFrame(data)
+X = df.drop('is_rug_pull', axis=1)
+y = df['is_rug_pull']
+model.fit(X, y)
+
+# Flask app setup
+app = Flask(__name__)
+
+# Function to fetch social sentiment
+def get_social_sentiment(token_name):
+    if not api:
+        logging.warning("Twitter API credentials not configured.")
+        return 0.0
+
+    try:
+        tweets = api.search_tweets(q=token_name, count=100, lang='en')
+        sentiment_scores = [TextBlob(tweet.text).sentiment.polarity for tweet in tweets]
+        return np.mean(sentiment_scores) if sentiment_scores else 0.0
+    except Exception as e:
+        logging.error(f"Error fetching sentiment: {e}")
+        return 0.0
+
+# Function to preprocess API input data
+def preprocess_data(input_data):
+    token_name = input_data.get("token_name", "Unknown")
+    sentiment_score = get_social_sentiment(token_name)
+    return {
+        "price_change_24h": input_data.get("price_change_24h", 0),
+        "liquidity": input_data.get("liquidity", 0),
+        "volume_24h": input_data.get("volume_24h", 0),
+        "ownership_concentration": input_data.get("ownership_concentration", 0),
+        "social_sentiment": sentiment_score
+    }
+
+@app.route("/predict", methods=["POST"])
+def predict():
+    try:
+        # Parse input JSON
+        input_data = request.json
+        if not input_data:
+            return jsonify({"error": "No input data provided"}), 400
+
+        # Preprocess and predict
+        features = preprocess_data(input_data)
+        feature_df = pd.DataFrame([features])
+        prediction = model.predict(feature_df)
+
+        logging.info(f"Prediction made: {prediction[0]} for data: {features}")
+        return jsonify({"prediction": int(prediction[0])})
+    except Exception as e:
+        logging.error(f"Error during prediction: {e}")
+        return jsonify({"error": "An error occurred"}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
